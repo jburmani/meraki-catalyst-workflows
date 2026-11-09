@@ -1,0 +1,105 @@
+{
+  "name": "Catalyst 9000 Switch Automated Onboarding",
+  "description": "Automates claiming Catalyst 9200/9300/9500 switches into Meraki Dashboard, configuring IOS-XE TLS/telemetry prerequisites, and validating online connectivity.",
+  "category": "Switch Management",
+  "version": "1.0.0",
+  "input_parameters": {
+    "organization_id": {
+      "type": "string",
+      "label": "Meraki Organization ID",
+      "required": true,
+      "description": "Target Meraki Org ID"
+    },
+    "network_id": {
+      "type": "string",
+      "label": "Meraki Network ID",
+      "required": true,
+      "description": "Target Network ID to place the switch (e.g. L_12345678)"
+    },
+    "switch_serial": {
+      "type": "string",
+      "label": "Catalyst Serial Number",
+      "required": true,
+      "description": "Hardware serial number printed on switch (e.g. FOC2412XXXX)"
+    },
+    "switch_management_ip": {
+      "type": "string",
+      "label": "Switch Management IP",
+      "required": true,
+      "description": "Reachable IPv4 address for SSH/RESTCONF configuration"
+    },
+    "webex_webhook_url": {
+      "type": "string",
+      "label": "Webex Notification Webhook (Optional)",
+      "required": false,
+      "description": "Webex Space Webhook URL for NetOps onboarding status alerts"
+    }
+  },
+  "workflow_steps": [
+    {
+      "step_id": "step_1_claim_device",
+      "name": "Claim Switch to Meraki Network",
+      "type": "meraki_api_call",
+      "method": "POST",
+      "endpoint": "/organizations/{{input.organization_id}}/claim",
+      "payload": {
+        "serials": ["{{input.switch_serial}}"]
+      },
+      "on_success": "step_2_assign_network",
+      "on_failure": "notify_error"
+    },
+    {
+      "step_id": "step_2_assign_network",
+      "name": "Bind Switch to Target Network",
+      "type": "meraki_api_call",
+      "method": "POST",
+      "endpoint": "/networks/{{input.network_id}}/devices/claim",
+      "payload": {
+        "serials": ["{{input.switch_serial}}"]
+      },
+      "on_success": "step_3_push_iosxe_config",
+      "on_failure": "notify_error"
+    },
+    {
+      "step_id": "step_3_push_iosxe_config",
+      "name": "Push Cloud Telemetry & TLS Config to Switch CLI",
+      "type": "device_cli_push",
+      "target_ip": "{{input.switch_management_ip}}",
+      "commands": [
+        "ip domain lookup",
+        "ip name-server 8.8.8.8 1.1.1.1",
+        "crypto pki trustpool import url http://www.cisco.com/security/pki/trs/ios.p7b",
+        "device-tracking tracking",
+        "service cloud-mgmt connect",
+        "restconf"
+      ],
+      "on_success": "step_4_poll_online_status",
+      "on_failure": "notify_error"
+    },
+    {
+      "step_id": "step_4_poll_online_status",
+      "name": "Verify Cloud Tunnel Status",
+      "type": "meraki_api_poll",
+      "method": "GET",
+      "endpoint": "/devices/{{input.switch_serial}}/managementInterface",
+      "retry_count": 6,
+      "retry_interval_seconds": 20,
+      "condition": "response.status == 'online'",
+      "on_success": "step_5_notify_success",
+      "on_failure": "notify_warning"
+    },
+    {
+      "step_id": "step_5_notify_success",
+      "name": "Send Webex Success Card",
+      "type": "webhook",
+      "url": "{{input.webex_webhook_url}}",
+      "payload": {
+        "markdown": "### ✅ Catalyst Switch Onboarding Completed
+- **Serial:** `{{input.switch_serial}}`
+- **Switch IP:** `{{input.switch_management_ip}}`
+- **Network ID:** `{{input.network_id}}`
+- **Status:** Cloud Tunnel Active (Online)"
+      }
+    }
+  ]
+}
